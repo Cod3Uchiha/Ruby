@@ -5,9 +5,21 @@ const {
   getJson,
   getJsonUrl,
   getBuffer,
+  getCatalog,
+  requestEndpoint,
   findUrl,
   formatApiError
 } = require('./api');
+
+const MAX_TEXT_CHUNK = 3500;
+
+function slug(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
 
 function targetJid(ctx) {
   const info = ctx.message.message?.extendedTextMessage?.contextInfo;
@@ -29,20 +41,239 @@ function mediaTarget(ctx) {
   return ctx.message;
 }
 
-const commands = [
+function splitLongText(text, maxLength = MAX_TEXT_CHUNK) {
+  const value = String(text || '');
+  if (value.length <= maxLength) return [value];
+
+  const chunks = [];
+  let remaining = value;
+  while (remaining.length > maxLength) {
+    let cut = remaining.lastIndexOf('\n', maxLength);
+    if (cut < maxLength * 0.5) cut = remaining.lastIndexOf(' ', maxLength);
+    if (cut < maxLength * 0.5) cut = maxLength;
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+async function replyLong(ctx, text) {
+  for (const chunk of splitLongText(text)) {
+    await ctx.reply(chunk);
+  }
+}
+
+function cleanFilename(value, fallback = 'T-response') {
+  const cleaned = String(value || fallback)
+    .replace(/[\\/:*?"<>|\r\n]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.slice(0, 100) || fallback;
+}
+
+function extensionFromType(contentType) {
+  const type = String(contentType || '').toLowerCase();
+  if (type.includes('jpeg')) return 'jpg';
+  if (type.includes('png')) return 'png';
+  if (type.includes('webp')) return 'webp';
+  if (type.includes('gif')) return 'gif';
+  if (type.includes('svg')) return 'svg';
+  if (type.includes('mpeg') || type.includes('mp3')) return 'mp3';
+  if (type.includes('mp4')) return 'mp4';
+  if (type.includes('ogg')) return 'ogg';
+  if (type.includes('wav')) return 'wav';
+  if (type.includes('pdf')) return 'pdf';
+  if (type.includes('json')) return 'json';
+  if (type.startsWith('text/')) return 'txt';
+  return 'bin';
+}
+
+function parseContentDispositionFilename(value) {
+  const match = String(value || '').match(/filename\*?=(?:UTF-8''|["']?)([^"';\r\n]+)/i);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1].replace(/["']/g, '').trim());
+  } catch {
+    return match[1].replace(/["']/g, '').trim();
+  }
+}
+
+function parseJsonBuffer(buffer) {
+  const text = buffer.toString('utf8').trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function sendEndpointResponse(ctx, endpoint, response) {
+  const contentType = String(response.contentType || endpoint.responseType || '').toLowerCase();
+  const suggestedName = parseContentDispositionFilename(response.contentDisposition);
+  const baseName = cleanFilename(suggestedName || endpoint.displayName || slug(endpoint.route));
+
+  if (contentType.includes('application/json') || contentType.includes('+json')) {
+    const data = parseJsonBuffer(response.buffer);
+    if (data !== null) {
+      return replyLong(ctx, `*${endpoint.displayName}*\n\n${JSON.stringify(data, null, 2)}`);
+    }
+  }
+
+  if (contentType.startsWith('text/') || contentType.includes('xml')) {
+    const text = response.buffer.toString('utf8');
+    if (contentType.includes('svg')) {
+      return ctx.sock.sendMessage(
+        ctx.chatId,
+        {
+          document: response.buffer,
+          mimetype: contentType.split(';')[0],
+          fileName: suggestedName || `${baseName}.svg`,
+          caption: endpoint.displayName
+        },
+        { quoted: ctx.message }
+      );
+    }
+    return replyLong(ctx, `*${endpoint.displayName}*\n\n${text}`);
+  }
+
+  if (contentType.startsWith('image/')) {
+    return ctx.sock.sendMessage(
+      ctx.chatId,
+      { image: response.buffer, caption: endpoint.displayName },
+      { quoted: ctx.message }
+    );
+  }
+
+  if (contentType.startsWith('audio/')) {
+    return ctx.sock.sendMessage(
+      ctx.chatId,
+      {
+        audio: response.buffer,
+        mimetype: contentType.split(';')[0],
+        fileName: suggestedName || `${baseName}.${extensionFromType(contentType)}`
+      },
+      { quoted: ctx.message }
+    );
+  }
+
+  if (contentType.startsWith('video/')) {
+    return ctx.sock.sendMessage(
+      ctx.chatId,
+      {
+        video: response.buffer,
+        mimetype: contentType.split(';')[0],
+        caption: endpoint.displayName
+      },
+      { quoted: ctx.message }
+    );
+  }
+
+  const maybeJson = parseJsonBuffer(response.buffer);
+  if (maybeJson !== null) {
+    return replyLong(ctx, `*${endpoint.displayName}*\n\n${JSON.stringify(maybeJson, null, 2)}`);
+  }
+
+  const extension = extensionFromType(contentType);
+  return ctx.sock.sendMessage(
+    ctx.chatId,
+    {
+      document: response.buffer,
+      mimetype: contentType.split(';')[0] || 'application/octet-stream',
+      fileName: suggestedName || `${baseName}.${extension}`,
+      caption: endpoint.displayName
+    },
+    { quoted: ctx.message }
+  );
+}
+
+function parseNamedParameters(text, endpointParams) {
+  const names = new Map(endpointParams.map((param) => [param.name.toLowerCase(), param.name]));
+  const matches = [];
+  const pattern = /(?:^|\s)([A-Za-z_][A-Za-z0-9_-]*)=/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const lookupKey = match[1].toLowerCase();
+    const key = names.get(lookupKey);
+    if (key) {
+      matches.push({ key, start: match.index + match[0].indexOf(match[1]), valueStart: pattern.lastIndex });
+    }
+  }
+  if (!matches.length) return null;
+
+  const output = {};
+  matches.forEach((entry, index) => {
+    const end = index + 1 < matches.length ? matches[index + 1].start : text.length;
+    output[entry.key] = text.slice(entry.valueStart, end).trim().replace(/^['"]|['"]$/g, '');
+  });
+  return output;
+}
+
+function parseEndpointParams(text, endpoint) {
+  const params = endpoint.params || [];
+  if (!params.length) return {};
+
+  const named = parseNamedParameters(text, params);
+  if (named) return named;
+
+  if (text.includes('|')) {
+    const pieces = text.split('|').map((part) => part.trim());
+    return Object.fromEntries(params.map((param, index) => [param.name, pieces[index] || '']));
+  }
+
+  if (params.length === 1) return { [params[0].name]: text.trim() };
+
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  const output = {};
+  params.forEach((param, index) => {
+    if (index === params.length - 1) output[param.name] = tokens.slice(index).join(' ');
+    else output[param.name] = tokens[index] || '';
+  });
+  return output;
+}
+
+function endpointUsage(endpoint) {
+  if (!endpoint.params?.length) return '';
+  return endpoint.params
+    .map((param) => `${param.name}=${param.example || `<${param.displayName || param.name}>`}`)
+    .join(' ');
+}
+
+function missingRequiredParams(endpoint, values) {
+  return (endpoint.params || [])
+    .filter((param) => param.required && !String(values[param.name] || '').trim())
+    .map((param) => param.name);
+}
+
+const commands = [];
+const commandMap = new Map();
+let dynamicCount = 0;
+let lastCatalogRefresh = null;
+
+const baseCommands = [
   {
     name: 'menu',
     aliases: ['help', 'commands'],
     category: 'general',
-    description: 'Show every command.',
+    description: 'Show every local and TKM-API command.',
+    usage: '[category]',
     async run(ctx) {
+      const filter = slug(ctx.text);
       const grouped = new Map();
       for (const command of commands) {
         const category = command.category || 'other';
+        if (filter && filter !== 'all' && slug(category) !== filter && slug(command.name) !== filter) continue;
         if (!grouped.has(category)) grouped.set(category, []);
         grouped.get(category).push(command);
       }
 
+      if (!grouped.size) {
+        const categories = [...new Set(commands.map((command) => command.category || 'other'))].sort();
+        return ctx.reply(`Unknown category. Available categories:\n${categories.join('\n')}`);
+      }
+
+      const header = `*T*\nCommands: ${commands.length} (${dynamicCount} live API endpoints)\nAPI: ${API_BASE_URL}`;
       const sections = [...grouped.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([category, items]) => {
@@ -53,7 +284,7 @@ const commands = [
           return `*${category.toUpperCase()}*\n${rows}`;
         });
 
-      await ctx.reply(`*T*\n\n${sections.join('\n\n')}\n\nAPI: ${API_BASE_URL}`);
+      await replyLong(ctx, `${header}\n\n${sections.join('\n\n')}`);
     }
   },
   {
@@ -78,7 +309,7 @@ const commands = [
     category: 'general',
     description: 'Show whether T is online.',
     async run(ctx) {
-      await ctx.reply(`T is online.\nExternal API: ${API_BASE_URL}`);
+      await ctx.reply(`T is online.\nExternal API: ${API_BASE_URL}\nLoaded API commands: ${dynamicCount}`);
     }
   },
   {
@@ -92,9 +323,22 @@ const commands = [
   {
     name: 'api',
     category: 'general',
-    description: 'Show the API used by T.',
+    description: 'Show TKM-API status and catalog information.',
     async run(ctx) {
-      await ctx.reply(`T uses only:\n${API_BASE_URL}\n\nCatalog:\n${API_BASE_URL}/catalog`);
+      await ctx.reply(
+        `T uses only:\n${API_BASE_URL}\n\nCatalog:\n${API_BASE_URL}/catalog\n\nLoaded endpoints: ${dynamicCount}\nLast refresh: ${lastCatalogRefresh || 'Not loaded'}`
+      );
+    }
+  },
+  {
+    name: 'apirefresh',
+    aliases: ['refreshapi'],
+    category: 'general',
+    description: 'Reload all commands from the live TKM-API catalog.',
+    ownerOnly: true,
+    async run(ctx) {
+      const count = await refreshApiCommands({ force: true });
+      await ctx.reply(`Reloaded ${count} TKM-API commands.`);
     }
   },
   {
@@ -260,7 +504,7 @@ const commands = [
   {
     name: 'play',
     aliases: ['yts', 'youtube'],
-    category: 'cod3-api',
+    category: 'cod3-api-shortcuts',
     description: 'Search YouTube through cod3uchiha.com.',
     usage: '<query>',
     async run(ctx) {
@@ -285,7 +529,7 @@ const commands = [
   {
     name: 'song',
     aliases: ['ytmp3', 'audio'],
-    category: 'cod3-api',
+    category: 'cod3-api-shortcuts',
     description: 'Download YouTube audio through cod3uchiha.com.',
     usage: '<query>',
     async run(ctx) {
@@ -303,7 +547,7 @@ const commands = [
           {
             audio: { url: mediaUrl },
             mimetype: 'audio/mpeg',
-            fileName: `${item.title || 'T-audio'}.mp3`
+            fileName: `${cleanFilename(item.title || 'T-audio')}.mp3`
           },
           { quoted: ctx.message }
         );
@@ -315,7 +559,7 @@ const commands = [
   {
     name: 'video',
     aliases: ['ytmp4'],
-    category: 'cod3-api',
+    category: 'cod3-api-shortcuts',
     description: 'Download YouTube video through cod3uchiha.com.',
     usage: '<query>',
     async run(ctx) {
@@ -330,146 +574,9 @@ const commands = [
 
         await ctx.sock.sendMessage(
           ctx.chatId,
-          {
-            video: { url: mediaUrl },
-            caption: item.title || 'T video',
-            mimetype: 'video/mp4'
-          },
+          { video: { url: mediaUrl }, caption: item.title || 'T video', mimetype: 'video/mp4' },
           { quoted: ctx.message }
         );
-      } catch (error) {
-        await ctx.reply(formatApiError(error));
-      }
-    }
-  },
-  {
-    name: 'tiktok',
-    aliases: ['tt', 'tiktokdl'],
-    category: 'cod3-api',
-    description: 'Download TikTok through cod3uchiha.com.',
-    usage: '<url>',
-    async run(ctx) {
-      const url = ctx.args[0];
-      if (!url) return ctx.reply(`Usage: ${ctx.settings.prefix}tiktok <URL>`);
-      try {
-        const data = await getJson('/downloaders/tiktokdl', { url });
-        const item = data.result;
-        await ctx.sock.sendMessage(
-          ctx.chatId,
-          {
-            video: { url: item.noWatermark || item.standard },
-            caption: `${item.title || 'TikTok video'}\nAuthor: ${item.author || 'Unknown'}`
-          },
-          { quoted: ctx.message }
-        );
-      } catch (error) {
-        await ctx.reply(formatApiError(error));
-      }
-    }
-  },
-  {
-    name: 'image',
-    aliases: ['img', 'imagesearch'],
-    category: 'cod3-api',
-    description: 'Search reusable images through cod3uchiha.com.',
-    usage: '<query>',
-    async run(ctx) {
-      if (!ctx.text) return ctx.reply(`Usage: ${ctx.settings.prefix}image <query>`);
-      try {
-        const data = await getJson('/downloaders/img', { text: ctx.text, limit: 8 });
-        const imageUrl = findUrl(data.result || data, ['url', 'originalUrl', 'thumbnail']);
-        if (!imageUrl) throw new Error('TKM-API returned no image.');
-        await ctx.sock.sendMessage(
-          ctx.chatId,
-          { image: { url: imageUrl }, caption: `Image result for: ${ctx.text}` },
-          { quoted: ctx.message }
-        );
-      } catch (error) {
-        await ctx.reply(formatApiError(error));
-      }
-    }
-  },
-  {
-    name: 'pinterest',
-    aliases: ['pint'],
-    category: 'cod3-api',
-    description: 'Search Pinterest through cod3uchiha.com.',
-    usage: '<query>',
-    async run(ctx) {
-      if (!ctx.text) return ctx.reply(`Usage: ${ctx.settings.prefix}pinterest <query>`);
-      try {
-        const { buffer } = await getBuffer('/downloaders/pint', { text: ctx.text });
-        await ctx.sock.sendMessage(
-          ctx.chatId,
-          { image: buffer, caption: `Pinterest result for: ${ctx.text}` },
-          { quoted: ctx.message }
-        );
-      } catch (error) {
-        await ctx.reply(formatApiError(error));
-      }
-    }
-  },
-  {
-    name: 'translate',
-    aliases: ['trt'],
-    category: 'cod3-api',
-    description: 'Translate text through cod3uchiha.com.',
-    usage: '<language-code> <text>',
-    async run(ctx) {
-      const [language, ...parts] = ctx.args;
-      const text = parts.join(' ').trim();
-      if (!language || !text) {
-        return ctx.reply(`Usage: ${ctx.settings.prefix}translate sn How are you?`);
-      }
-      try {
-        const data = await getJson('/tools/trt', { text, language });
-        await ctx.reply(`*Translation*\nFrom: ${data.from || 'auto'}\nTo: ${data.language || data.to}\n\n${data.result}`);
-      } catch (error) {
-        await ctx.reply(formatApiError(error));
-      }
-    }
-  },
-  {
-    name: 'emojimix',
-    category: 'cod3-api',
-    description: 'Combine emojis through cod3uchiha.com.',
-    usage: '<emoji1> <emoji2>',
-    async run(ctx) {
-      const [emoji1, emoji2] = ctx.args;
-      if (!emoji1 || !emoji2) return ctx.reply(`Usage: ${ctx.settings.prefix}emojimix 🔥 😎`);
-      try {
-        const { buffer } = await getBuffer('/tools/emojimix', { emoji1, emoji2 });
-        await ctx.sock.sendMessage(
-          ctx.chatId,
-          {
-            document: buffer,
-            mimetype: 'image/svg+xml',
-            fileName: 'T-emojimix.svg',
-            caption: `${emoji1} + ${emoji2}`
-          },
-          { quoted: ctx.message }
-        );
-      } catch (error) {
-        await ctx.reply(formatApiError(error));
-      }
-    }
-  },
-  {
-    name: 'imagine',
-    aliases: ['flux', 'generate'],
-    category: 'cod3-api',
-    description: 'Generate an image through cod3uchiha.com.',
-    usage: '<prompt>',
-    async run(ctx) {
-      if (!ctx.text) return ctx.reply(`Usage: ${ctx.settings.prefix}imagine <prompt>`);
-      try {
-        await ctx.reply('T is generating the image...');
-        const { buffer } = await getBuffer('/ai/FluxLora', {
-          prompt: ctx.text,
-          width: 1024,
-          height: 1024
-        });
-        await ctx.sock.sendMessage(ctx.chatId, { image: buffer, caption: ctx.text }, { quoted: ctx.message });
       } catch (error) {
         await ctx.reply(formatApiError(error));
       }
@@ -477,19 +584,101 @@ const commands = [
   }
 ];
 
-function buildCommandMap() {
-  const map = new Map();
+commands.push(...baseCommands);
+
+function rebuildCommandMap() {
+  commandMap.clear();
   for (const command of commands) {
     for (const name of [command.name, ...(command.aliases || [])]) {
       const key = String(name).toLowerCase();
-      if (map.has(key)) throw new Error(`Duplicate command name: ${key}`);
-      map.set(key, command);
+      if (!key || commandMap.has(key)) continue;
+      commandMap.set(key, command);
     }
   }
-  return map;
 }
+
+function makeDynamicCommand(endpoint, aliases = []) {
+  const routeCommand = slug(endpoint.route.replace(/^\//, '').replaceAll('/', '-'));
+  return {
+    name: routeCommand,
+    aliases,
+    category: `api-${slug(endpoint.category) || 'other'}`,
+    description: endpoint.description,
+    usage: endpointUsage(endpoint),
+    dynamicApi: true,
+    endpoint,
+    async run(ctx) {
+      const values = parseEndpointParams(ctx.text, endpoint);
+      const missing = missingRequiredParams(endpoint, values);
+      if (missing.length) {
+        const usage = endpointUsage(endpoint);
+        return ctx.reply(
+          `Missing: ${missing.join(', ')}\nUsage: ${ctx.settings.prefix}${routeCommand}${usage ? ` ${usage}` : ''}\nRoute: ${endpoint.route}`
+        );
+      }
+
+      try {
+        const response = await requestEndpoint(endpoint, values);
+        await sendEndpointResponse(ctx, endpoint, response);
+      } catch (error) {
+        await ctx.reply(formatApiError(error));
+      }
+    }
+  };
+}
+
+async function refreshApiCommands({ force = false } = {}) {
+  const catalog = await getCatalog({ force });
+  const staticCommands = commands.filter((command) => !command.dynamicApi);
+  const reserved = new Set();
+  for (const command of staticCommands) {
+    for (const name of [command.name, ...(command.aliases || [])]) reserved.add(String(name).toLowerCase());
+  }
+
+  const baseNameCounts = new Map();
+  const displayNameCounts = new Map();
+  for (const endpoint of catalog.endpoints) {
+    const baseName = slug(endpoint.route.split('/').filter(Boolean).at(-1));
+    const displayName = slug(endpoint.displayName);
+    const routeCommand = slug(endpoint.route.replace(/^\//, '').replaceAll('/', '-'));
+    if (routeCommand) reserved.add(routeCommand);
+    baseNameCounts.set(baseName, (baseNameCounts.get(baseName) || 0) + 1);
+    displayNameCounts.set(displayName, (displayNameCounts.get(displayName) || 0) + 1);
+  }
+
+  const dynamicCommands = catalog.endpoints.map((endpoint) => {
+    const aliases = [];
+    const baseName = slug(endpoint.route.split('/').filter(Boolean).at(-1));
+    const displayName = slug(endpoint.displayName);
+
+    if (baseName && baseNameCounts.get(baseName) === 1 && !reserved.has(baseName)) {
+      aliases.push(baseName);
+      reserved.add(baseName);
+    }
+    if (
+      displayName &&
+      displayName !== baseName &&
+      displayNameCounts.get(displayName) === 1 &&
+      !reserved.has(displayName)
+    ) {
+      aliases.push(displayName);
+      reserved.add(displayName);
+    }
+
+    return makeDynamicCommand(endpoint, aliases);
+  });
+
+  commands.splice(0, commands.length, ...staticCommands, ...dynamicCommands);
+  dynamicCount = dynamicCommands.length;
+  lastCatalogRefresh = catalog.fetchedAt;
+  rebuildCommandMap();
+  return dynamicCount;
+}
+
+rebuildCommandMap();
 
 module.exports = {
   commands,
-  commandMap: buildCommandMap()
+  commandMap,
+  refreshApiCommands
 };
