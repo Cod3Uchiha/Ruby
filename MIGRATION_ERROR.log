@@ -1,0 +1,6 @@
+Cloning into '/tmp/knightbot-original'...
+Traceback (most recent call last):
+  File "/home/runner/work/Ruby/Ruby/.github/restore_original_t.py", line 567, in <module>
+  File "/home/runner/work/Ruby/Ruby/.github/restore_original_t.py", line 563, in main
+  File "/home/runner/work/Ruby/Ruby/.github/restore_original_t.py", line 538, in audit
+RuntimeError: External command API violations: flirt.js: https://shizoapi.onrender.com/api/texts/flirt?apikey=${shizokeys}; misc.js: https://i.imgur.com/2wzGhpF.png; simp.js: https://telegra.ph/file/24fa902ead26340f3df2c.png; welcome.js: https://img.pyrocdn.com/dbKUgahg.png; gif.js: https://api.giphy.com/v1/gifs/search; goodbye.js: https://img.pyrocdn.com/dbKUgahg.png; trivia.js: https://opentdb.com/api.php?amount=1&type=multiple; dare.js: https://shizoapi.onrender.com/api/texts/dare?apikey=${shizokeys}; truth.js: https://shizoapi.onrender.com/api/texts/truth?apikey=${shizokeys}; stupid.js: https://telegra.ph/file/24fa902ead26340f3df2c.png
