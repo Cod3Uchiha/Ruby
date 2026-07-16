@@ -1,9 +1,9 @@
 name: Restore original T bot structure
 
 on:
-  push:
-    paths:
-      - .github/workflows/restore-original-t.yml
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -15,10 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out Ruby
+      - name: Check out migration branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Restore original structure and apply requested changes
         run: python3 .github/restore_original_t.py
