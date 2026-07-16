@@ -1,14 +1,16 @@
-require('dotenv').config();
+const settings = {
+  packname: 'T',
+  author: '‎',
+  botName: "T",
+  botOwner: 'Professor', // Your name
+  ownerNumber: '919876543210', //Set your number here without + symbol, just add country code & number without any space
+  giphyApiKey: 'qnl7ssQChTdPjsKta2Ax2LMaGXz303tq',
+  commandMode: "public",
+  maxStoreMessages: 20, 
+  storeWriteInterval: 10000,
+  description: "This is a bot for managing group commands and automating tasks.",
+  version: "3.0.6",
+  updateZipUrl: "https://github.com/Cod3Uchiha/Ruby/archive/refs/heads/main.zip",
+};
 
-const cleanNumber = (value = '') => String(value).replace(/\D/g, '');
-
-module.exports = Object.freeze({
-  botName: 'T',
-  prefix: process.env.PREFIX || '.',
-  ownerNumber: cleanNumber(process.env.OWNER_NUMBER || ''),
-  pairingNumber: cleanNumber(process.env.PAIRING_NUMBER || process.env.OWNER_NUMBER || ''),
-  sessionDirectory: process.env.SESSION_DIRECTORY || './session',
-  apiBaseUrl: 'https://cod3uchiha.com',
-  logLevel: process.env.LOG_LEVEL || 'silent',
-  browser: ['T', 'Chrome', '1.0.0']
-});
+module.exports = settings;
