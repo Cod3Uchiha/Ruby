@@ -22,6 +22,19 @@ jobs:
           show-progress: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Restrict removal to actual API commands
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/restore_original_t.py')
+          text = path.read_text(encoding='utf-8')
+          old = """    removed = set(EXPLICIT_REMOVE)\n    for path in COMMANDS.glob('*.js'):\n        stem = path.stem\n        if stem in SUPPORTED:\n            continue\n        text = path.read_text(encoding='utf-8', errors='ignore')\n        if NETWORK_MARKERS.search(text):\n            removed.add(stem)\n"""
+          if old not in text:
+              raise SystemExit('Expected scanner block was not found')
+          path.write_text(text.replace(old, "    removed = set(EXPLICIT_REMOVE)\n"), encoding='utf-8')
+          PY
+
       - name: Restore original structure and apply requested changes
         id: migration
         continue-on-error: true
