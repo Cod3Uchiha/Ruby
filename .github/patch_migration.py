@@ -7,6 +7,11 @@ scanner = """    removed = set(EXPLICIT_REMOVE)\n    for path in COMMANDS.glob('
 if scanner in text:
     text = text.replace(scanner, "    removed = set(EXPLICIT_REMOVE)\n")
 
+network_marker = "NETWORK_MARKERS = re.compile("
+network_prelude = "EXPLICIT_REMOVE.update({'flirt', 'gif', 'trivia', 'dare', 'truth'})\nSTATIC_MEDIA_COMMANDS = {'misc', 'simp', 'stupid', 'welcome', 'goodbye'}\n"
+if network_prelude not in text:
+    text = text.replace(network_marker, network_prelude + network_marker, 1)
+
 start = text.index('def remove_case_blocks(')
 end = text.index('\ndef remove_external_commands()', start)
 parser = '''def remove_case_blocks(main_text: str, removed_vars: set[str], removed_stems: set[str]) -> str:
@@ -56,4 +61,10 @@ replacement = needle + "    main_text = re.sub(r'^\\s*await handleChatbotRespons
 if needle not in text:
     raise SystemExit('Case-removal call was not found')
 text = text.replace(needle, replacement, 1)
+
+audit_needle = "    for path in COMMANDS.glob('*.js'):\n        text = path.read_text(encoding='utf-8', errors='ignore')\n        if NETWORK_MARKERS.search(text):\n"
+audit_replacement = "    for path in COMMANDS.glob('*.js'):\n        if path.stem in STATIC_MEDIA_COMMANDS:\n            continue\n        text = path.read_text(encoding='utf-8', errors='ignore')\n        if NETWORK_MARKERS.search(text):\n"
+if audit_needle not in text:
+    raise SystemExit('Audit scanner was not found')
+text = text.replace(audit_needle, audit_replacement, 1)
 path.write_text(text, encoding='utf-8')
