@@ -1,0 +1,52 @@
+name: Restore original T bot structure
+
+on:
+  push:
+    paths:
+      - .github/workflows/restore-original-t.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out Ruby
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore original structure and apply requested changes
+        run: python3 .github/restore_original_t.py
+
+      - name: Final branding and syntax validation
+        shell: bash
+        run: |
+          sed -i 's/Original KnightBot layout preserved/Original bot layout preserved/g' MIGRATION_REPORT.json
+          if grep -Rni --exclude-dir=.git --exclude='*.jpg' --exclude='*.jpeg' --exclude='*.png' --exclude='*.webp' 'knight' .; then
+            echo 'Old branding remains.'
+            exit 1
+          fi
+          node --check main.js
+          node --check lib/tkmApi.js
+          node --check commands/play.js
+          node --check commands/song.js
+          node --check commands/video.js
+          node --check commands/tiktok.js
+          node --check commands/imagine.js
+          node --check commands/emojimix.js
+          node --check commands/translate.js
+
+      - name: Commit corrected bot to main
+        shell: bash
+        run: |
+          rm -f .github/restore_original_t.py .github/workflows/restore-original-t.yml
+          git config user.name 'Cod3Uchiha'
+          git config user.email '157640942+Cod3Uchiha@users.noreply.github.com'
+          git add -A
+          git commit -m 'Restore original bot structure and rebrand to T'
+          git push origin HEAD:main
