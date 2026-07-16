@@ -34,4 +34,4 @@ if (violations.length) {
   process.exit(1);
 }
 
-console.log('PASS: T branding only and all external API URLs use cod3uchiha.com.');
+console.log('PASS: T branding only; runtime API URLs use cod3uchiha.com; commands load from /catalog.');
