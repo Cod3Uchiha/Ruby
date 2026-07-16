@@ -15,64 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out migration branch
+      - name: Check out Ruby main
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           show-progress: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: main
 
-      - name: Patch the one-time migration parser
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('.github/restore_original_t.py')
-          text = path.read_text(encoding='utf-8')
-          scanner = """    removed = set(EXPLICIT_REMOVE)\n    for path in COMMANDS.glob('*.js'):\n        stem = path.stem\n        if stem in SUPPORTED:\n            continue\n        text = path.read_text(encoding='utf-8', errors='ignore')\n        if NETWORK_MARKERS.search(text):\n            removed.add(stem)\n"""
-          if scanner in text:
-              text = text.replace(scanner, "    removed = set(EXPLICIT_REMOVE)\n")
-
-          start = text.index('def remove_case_blocks(')
-          end = text.index('\ndef remove_external_commands()', start)
-          parser = r'''def remove_case_blocks(main_text: str, removed_vars: set[str], removed_stems: set[str]) -> str:
-              lines = main_text.splitlines(keepends=True)
-              first_case = next((i for i, line in enumerate(lines) if re.match(r'^(\s*)case\s+', line)), None)
-              if first_case is None:
-                  return main_text
-              indent = re.match(r'^(\s*)case\s+', lines[first_case]).group(1)
-              switch_indent = indent[:-4] if len(indent) >= 4 else ''
-              switch_end = next(
-                  (i for i in range(first_case + 1, len(lines)) if re.match(rf'^{re.escape(switch_indent)}\}}\s*$', lines[i])),
-                  len(lines),
-              )
-              boundaries = [
-                  i for i in range(first_case, switch_end)
-                  if re.match(rf'^{re.escape(indent)}(?:case\s+|default\s*:)', lines[i])
-              ]
-              boundaries.append(switch_end)
-              case_starts = [i for i in boundaries[:-1] if re.match(rf'^{re.escape(indent)}case\s+', lines[i])]
-              remove_ranges: list[tuple[int, int]] = []
-              command_tokens = {f'.{stem}' for stem in removed_stems}
-              for left in case_starts:
-                  right = next(value for value in boundaries if value > left)
-                  block = ''.join(lines[left:right])
-                  if any(re.search(rf'\b{re.escape(name)}\b', block) for name in removed_vars) or any(token in block for token in command_tokens):
-                      remove_ranges.append((left, right))
-              for left, right in reversed(remove_ranges):
-                  del lines[left:right]
-              return ''.join(lines)
-
-'''
-          parser = '\n'.join(line[12:] if line.startswith('            ') else line for line in parser.splitlines()) + '\n'
-          text = text[:start] + parser + text[end + 1:]
-          needle = "    main_text = remove_case_blocks(main_text, removed_vars, removed)\n"
-          replacement = needle + "    main_text = re.sub(r'^\\s*await handleChatbotResponse\\([^;]+;\\s*\\n', '', main_text, flags=re.M)\n"
-          if needle not in text:
-              raise SystemExit('Case-removal call was not found')
-          text = text.replace(needle, replacement, 1)
-          path.write_text(text, encoding='utf-8')
-          PY
+      - name: Patch migration parser
+        run: python3 .github/patch_migration.py
 
       - name: Restore original structure and apply requested changes
         id: migration
@@ -89,7 +40,7 @@ jobs:
           git config user.email '157640942+Cod3Uchiha@users.noreply.github.com'
           git add MIGRATION_ERROR.log
           git commit -m 'Record T migration diagnostic'
-          git push origin HEAD:agent/run-original-t-migration
+          git push --force origin HEAD:agent/run-original-t-migration
           exit 1
 
       - name: Final branding and syntax validation
@@ -115,7 +66,7 @@ jobs:
         if: steps.migration.outcome == 'success'
         shell: bash
         run: |
-          rm -f .github/restore_original_t.py .github/workflows/restore-original-t.yml
+          rm -f .github/restore_original_t.py .github/patch_migration.py .github/workflows/restore-original-t.yml
           git config user.name 'Cod3Uchiha'
           git config user.email '157640942+Cod3Uchiha@users.noreply.github.com'
           git add -A
