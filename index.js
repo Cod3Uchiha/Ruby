@@ -13,10 +13,11 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const settings = require('./settings');
-const { commands, commandMap } = require('./commands');
+const { commands, commandMap, refreshApiCommands } = require('./commands');
 
 const logger = pino({ level: settings.logLevel });
 let reconnectTimer = null;
+let catalogRefreshTimer = null;
 
 function normalizeJid(jid = '') {
   return String(jid).replace(/:\d+@/, '@');
@@ -129,6 +130,19 @@ async function enforcePermissions(ctx) {
   return true;
 }
 
+async function resolveCommand(name) {
+  let command = commandMap.get(name.toLowerCase());
+  if (command) return command;
+
+  try {
+    await refreshApiCommands({ force: true });
+    command = commandMap.get(name.toLowerCase());
+  } catch (error) {
+    logger.warn(`On-demand API catalog refresh failed: ${error.message}`);
+  }
+  return command;
+}
+
 async function handleMessage(sock, message) {
   if (!message?.message || message.key.remoteJid === 'status@broadcast') return;
 
@@ -140,7 +154,7 @@ async function handleMessage(sock, message) {
   if (!input) return;
 
   const [name, ...args] = input.split(/\s+/);
-  const command = commandMap.get(name.toLowerCase());
+  const command = await resolveCommand(name);
   if (!command) return;
 
   const ctx = await createContext(sock, message, command, args);
@@ -159,8 +173,26 @@ function disconnectCode(error) {
   return error?.output?.statusCode || new Boom(error).output.statusCode;
 }
 
+async function initializeApiCommands() {
+  try {
+    const count = await refreshApiCommands({ force: true });
+    logger.info(`Loaded ${count} live commands from cod3uchiha.com/catalog`);
+  } catch (error) {
+    logger.warn(`Initial API catalog load failed: ${error.message}`);
+  }
+
+  clearInterval(catalogRefreshTimer);
+  catalogRefreshTimer = setInterval(() => {
+    refreshApiCommands({ force: true })
+      .then((count) => logger.info(`Refreshed ${count} TKM-API commands`))
+      .catch((error) => logger.warn(`API catalog refresh failed: ${error.message}`));
+  }, 10 * 60 * 1000);
+  catalogRefreshTimer.unref?.();
+}
+
 async function start() {
   fs.mkdirSync(settings.sessionDirectory, { recursive: true });
+  await initializeApiCommands();
 
   const { state, saveCreds } = await useMultiFileAuthState(settings.sessionDirectory);
   const { version } = await fetchLatestBaileysVersion();
