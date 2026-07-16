@@ -19,12 +19,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          show-progress: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Restore original structure and apply requested changes
-        run: python3 .github/restore_original_t.py
+        id: migration
+        continue-on-error: true
+        shell: bash
+        run: python3 .github/restore_original_t.py > /tmp/t-migration.log 2>&1
+
+      - name: Save migration diagnostic
+        if: steps.migration.outcome == 'failure'
+        shell: bash
+        run: |
+          tail -n 120 /tmp/t-migration.log > MIGRATION_ERROR.log
+          git config user.name 'Cod3Uchiha'
+          git config user.email '157640942+Cod3Uchiha@users.noreply.github.com'
+          git add MIGRATION_ERROR.log
+          git commit -m 'Record T migration diagnostic'
+          git push origin HEAD:agent/run-original-t-migration
+          exit 1
 
       - name: Final branding and syntax validation
+        if: steps.migration.outcome == 'success'
         shell: bash
         run: |
           sed -i 's/Original KnightBot layout preserved/Original bot layout preserved/g' MIGRATION_REPORT.json
@@ -43,6 +60,7 @@ jobs:
           node --check commands/translate.js
 
       - name: Commit corrected bot to main
+        if: steps.migration.outcome == 'success'
         shell: bash
         run: |
           rm -f .github/restore_original_t.py .github/workflows/restore-original-t.yml
