@@ -1,0 +1,26 @@
+{
+  "name": "t-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "T WhatsApp bot powered exclusively by cod3uchiha.com for external API commands.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js && node --check commands.js && node --check api.js && node --check settings.js",
+    "audit": "node audit.js",
+    "test": "npm run check && npm run audit"
+  },
+  "author": "Cod3Uchiha",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "axios": "^1.8.4",
+    "dotenv": "^16.4.7",
+    "pino": "^9.6.0",
+    "sharp": "^0.33.5"
+  }
+}
